@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OctPlayer - FFmpeg + Qt + SDL3 架构说明</title>
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --paper: #ffffff;
+      --ink: #1e2a36;
+      --muted: #607181;
+      --primary: #1b6fb8;
+      --primary-dark: #0f4a7a;
+      --line: #dfe7f0;
+      --code-bg: #111b2a;
+      --accent: #edf5ff;
+      --warn: #fff4db;
+      --warn-border: #d99019;
+      --good: #edf9f0;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0; background: var(--bg); color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+      line-height: 1.7;
+    }
+    header {
+      background: linear-gradient(135deg, #0d3d63, #1d75bd);
+      color: white; padding: 48px 20px 42px;
+    }
+    .hero { max-width: 1100px; margin: 0 auto; }
+    h1 { margin: 0 0 12px; font-size: 34px; line-height: 1.2; }
+    .subtitle { max-width: 850px; font-size: 17px; opacity: 0.92; }
+    .layout {
+      max-width: 1200px; margin: 28px auto; padding: 0 18px;
+      display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 24px;
+    }
+    nav {
+      position: sticky; top: 16px; align-self: start;
+      background: var(--paper); border: 1px solid var(--line); border-radius: 12px;
+      padding: 14px; max-height: calc(100vh - 32px); overflow: auto;
+    }
+    nav strong { display: block; padding: 6px 10px 10px; }
+    nav a {
+      display: block; color: #31506a; text-decoration: none; padding: 6px 10px; border-radius: 7px;
+      font-size: 13px;
+    }
+    nav a:hover { background: var(--accent); color: var(--primary); }
+    main { min-width: 0; }
+    section {
+      background: var(--paper); border: 1px solid var(--line); border-radius: 14px;
+      padding: 28px 32px; margin-bottom: 20px; box-shadow: 0 6px 18px rgba(20, 52, 84, 0.05);
+    }
+    h2 {
+      margin: 0 0 18px; padding-bottom: 10px; border-bottom: 1px solid var(--line);
+      font-size: 24px; color: var(--primary-dark);
+    }
+    h3 {
+      margin-top: 24px; font-size: 18px; color: var(--primary-dark);
+    }
+    p, li { font-size: 15px; }
+    ul, ol { padding-left: 24px; }
+    code { font-family: "Cascadia Code", Consolas, monospace; }
+    :not(pre) > code {
+      background: #edf2f7; color: #a3302c; padding: 2px 6px; border-radius: 4px;
+      font-size: 0.95em;
+    }
+    pre {
+      margin: 14px 0; padding: 18px; border-radius: 10px; background: var(--code-bg);
+      color: #e8eef8; overflow: auto; font-size: 13px; line-height: 1.5;
+    }
+    .callout, .warning {
+      margin: 18px 0; border-left: 4px solid var(--primary); padding: 14px 16px; border-radius: 8px;
+      background: var(--accent);
+    }
+    .warning {
+      border-left-color: var(--warn-border); background: var(--warn);
+    }
+    .status { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+    .status.ready { background: var(--good); color: #1c6f42; }
+    .status.scaffold { background: #eaf2ff; color: #1d5fb5; }
+    footer {
+      text-align: center; color: var(--muted); padding: 16px 20px 30px; font-size: 13px;
+    }
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+      nav { position: relative; top: 0; max-height: none; }
+      section { padding: 24px 20px; }
+      h1 { font-size: 28px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="hero">
+      <h1>OctPlayer - FFmpeg + Qt + SDL3 播放器架构说明</h1>
+      <div class="subtitle">
+        本项目当前是一个以 Qt Quick 为 UI，FFmpeg 负责解封装与解码，SDL3 负责音频输出，QQuickFramebufferObject 负责视频渲染的播放器骨架。
+      </div>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav>
+      <strong>目录</strong>
+      <a href="#s1">1. 项目综述</a>
+      <a href="#s2">2. 当前代码结构</a>
+      <a href="#s3">3. 核心对象职责</a>
+      <a href="#s4">4. 数据流和事件流</a>
+      <a href="#s5">5. 架构图</a>
+      <a href="#s6">6. SDL3 相关说明</a>
+      <a href="#s7">7. Qt/QML 集成方式</a>
+      <a href="#s8">8. 当前已完成项</a>
+      <a href="#s9">9. 目前未完成/待补项</a>
+      <a href="#s10">10. 实施建议</a>
+    </nav>
+
+    <main>
+      <section id="s1">
+        <h2>1. 项目综述</h2>
+        <p>这个项目的目标是搭建一个“可扩展的播放器内核”，而不是仅仅做一个单文件 Demo。当前代码已经具备以下几个关键骨架：</p>
+        <ul>
+          <li>Qt 6 + QML 应用入口</li>
+          <li>FFmpeg 相关封装（demuxer/RAII）</li>
+          <li>SDL3 音频输出适配</li>
+          <li>视频最新帧邮箱（mailbox）</li>
+          <li>Qt Quick 渲染对象（QQuickFramebufferObject）</li>
+          <li>统一的 player 运行时对象和事件回调</li>
+        </ul>
+        <div class="callout">
+          结论：当前不是一个完整的媒体播放器产品，而是一个“播放器主干 + 边界抽象 + 可继续扩展的骨架”，适合继续实现 FFmpeg 解码、同步、缓冲和视频渲染细节。
+        </div>
+      </section>
+
+      <section id="s2">
+        <h2>2. 当前代码结构</h2>
+        <pre><code>OctPlayer/
+├── CMakeLists.txt
+├── README.md
+├── ffmpeg_qt_sdl_player_architecture.html
+├── app/
+│   ├── CMakeLists.txt
+│   ├── main.cpp
+│   ├── qml.qrc
+│   └── qml/
+│       └── Main.qml
+├── player/
+│   ├── CMakeLists.txt
+│   ├── api/
+│   │   ├── IPlayer.h
+│   │   ├── MediaTypes.h
+│   │   └── PlayerEvent.h
+│   ├── backend/
+│   │   └── ffmpeg/
+│   │       ├── FfmpegDemuxer.h
+│   │       ├── FfmpegDemuxer.cpp
+│   │       └── FfmpegRaii.h
+│   ├── core/
+│   │   ├── Player.h
+│   │   ├── Player.cpp
+│   │   ├── PlaybackSession.h
+│   │   ├── PlaybackSession.cpp
+│   │   ├── MediaClock.h
+│   │   └── MediaClock.cpp
+│   ├── output/
+│   │   ├── audio/
+│   │   │   ├── IAudioSink.h
+│   │   │   ├── SdlAudioSink.h
+│   │   │   └── SdlAudioSink.cpp
+│   │   └── video/
+│   │       ├── IVideoSink.h
+│   │       ├── VideoFrameMailbox.h
+│   │       ├── VideoFrameMailbox.cpp
+│   │       └── ...
+│   └── platform/
+│       └── qt/
+│           ├── QtPlayerAdapter.h
+│           ├── QtPlayerAdapter.cpp
+│           ├── VideoOutputItem.h
+│           ├── VideoOutputItem.cpp
+│           ├── VideoOutputRenderer.h
+│           └── VideoOutputRenderer.cpp
+├── ThirdParty/
+│   ├── ffmpeg60/
+│   └── SDL3-3.2.18/
+└── build/
+</code></pre>
+      </section>
+
+      <section id="s3">
+        <h2>3. 核心对象职责</h2>
+
+        <h3>3.1 Player</h3>
+        <p><code>player::Player</code> 是整个播放器的主入口。它持有：音频输出适配器、视频帧信箱、当前 session，并负责创建/替换 <code>PlaybackSession</code>。</p>
+        <pre><code>Player::open() -> 创建新 PlaybackSession
+Player::play() / pause() / stop() / seek() -> 转发给当前 session
+Player::snapshot() -> 返回状态快照
+Player::setEventCallback() -> 订阅状态变化事件</code></pre>
+
+        <h3>3.2 PlaybackSession</h3>
+        <p><code>PlaybackSession</code> 是一次播放会话的核心容器，持有解封装器、时钟和输出适配器。这里负责 session 生命周期、状态变化和 seek 相关边界。</p>
+        <pre><code>PlaybackSession
+ ├─ demuxer_
+ ├─ clock_
+ ├─ audio_
+ ├─ video_
+ ├─ snapshot_
+ └─ event_</code></pre>
+
+        <h3>3.3 FfmpegDemuxer</h3>
+        <p><code>FfmpegDemuxer</code> 是 FFmpeg 侧的封装层，负责打开媒体源、seek 和访问 <code>AVFormatContext</code>。这是将 FFmpeg 细节从播放器主逻辑中隔离出来的关口。</p>
+
+        <h3>3.4 SdlAudioSink</h3>
+        <p><code>SdlAudioSink</code> 实现了 <code>IAudioSink</code>，当前使用的是 SDL3 的流式音频接口（SDL_AudioStream / SDL_OpenAudioDeviceStream 这类 API），而不是 SDL2 的旧式 <code>SDL_QueueAudio</code> 方案。</p>
+        <pre><code>IAudioSink
+ ├─ open()
+ ├─ start()/pause()
+ ├─ flush()
+ ├─ close()
+ ├─ write()
+ └─ playedTime()</code></pre>
+
+        <h3>3.5 VideoFrameMailbox</h3>
+        <p><code>VideoFrameMailbox</code> 是视频渲染前的最新帧缓存，作用相当于“只保留最后一帧”的桥接对象。它让渲染器不必处理无限增长的帧队列。</p>
+
+        <h3>3.6 QtPlayerAdapter</h3>
+        <p><code>QtPlayerAdapter</code> 是连接 QML 和内部播放器的桥接层。它暴露 QML 可调用的方法，如 <code>open()</code>、<code>play()</code>、<code>pause()</code>、<code>stop()</code> 等，并通过 Qt 属性暴露播放状态和位置。</p>
+
+        <h3>3.7 VideoOutputItem / VideoOutputRenderer</h3>
+        <p><code>VideoOutputItem</code> 是 QML 可用的自定义控件，<code>VideoOutputRenderer</code> 是它的 OpenGL 渲染器。通过 <code>QQuickFramebufferObject</code>，可以在 Qt Quick 场景中插入自定义视频渲染内容。</p>
+      </section>
+
+      <section id="s4">
+        <h2>4. 数据流和事件流</h2>
+        <pre><code>QML / UI
+   │
+   ▼
+QtPlayerAdapter
+   │
+   ▼
+Player
+   │
+   ▼
+PlaybackSession
+   │   ├─ FFmpeg demuxer -> packets
+   │   ├─ AudioSink -> SDL3 playback
+   │   └─ VideoFrameMailbox -> QQuickFramebufferObject
+   │
+   └─ PlayerEvent -> Qt signals / stateChanged / positionChanged</code></pre>
+
+        <p>从设计上讲，这条链路允许 UI 层只访问稳定的 Qt/Player 接口，而不必直接依赖 FFmpeg 或 SDL API。</p>
+        <p>当前代码的实现已经把“播放器状态变化”和“音视频输出适配器”做成了明确边界，但真正的音视频解码线程、packet queue、frame queue、同步策略、seek/generation 校验等仍有待补全。</p>
+      </section>
+
+      <section id="s5">
+        <h2>5. 架构图</h2>
+        <pre><code>┌────────────────────────── Qt / QML 层 ──────────────────────────┐
+│ app/main.cpp                                                     │
+│ QQmlApplicationEngine                                           │
+│ Main.qml                                                         │
+│ Button / TextField / VideoOutput                                  │
+└──────────────────────────────┬────────────────────────────────────┘
+                               │ QObject / Q_INVOKABLE
+                               ▼
+┌────────────────────────── QtPlayerAdapter ───────────────────────┐
+│ open/play/pause/stop/seek                                       │
+│ state / positionMs                                              │
+│ videoMailbox()                                                  │
+└──────────────────────────────┬────────────────────────────────────┘
+                               │
+                               ▼
+┌────────────────────────────── Player Core ───────────────────────┐
+│ Player                                                          │
+│ PlaybackSession                                                 │
+│ MediaClock                                                      │
+│ event callback                                                  │
+└──────────────────────────────┬────────────────────────────────────┘
+                               │
+         ┌─────────────────────┼─────────────────────┐
+         ▼                     ▼                     ▼
+┌─────────────── FFmpeg Backend ─────────────┐ ┌─────────────── Audio ───────────────┐
+│ FfmpegDemuxer                               │ │ SdlAudioSink (SDL3)                  │
+│ AVFormatContext / seek / open               │ │ SDL_AudioStream / device stream      │
+└────────────────────────────────────────────┘ └──────────────────────────────────────┘
+                                                 │
+                                                 ▼
+                                   ┌──────────────────────────────┐
+                                   │ VideoFrameMailbox            │
+                                   │ latest frame cache           │
+                                   └──────────────┬───────────────┘
+                                                  │
+                                                  ▼
+                                      ┌──────────────────────────┐
+                                      │ VideoOutputItem           │
+                                      │ VideoOutputRenderer       │
+                                      │ QQuickFramebufferObject   │
+                                      └──────────────────────────┘</code></pre>
+      </section>
+
+      <section id="s6">
+        <h2>6. SDL3 相关说明</h2>
+        <p>当前项目已经从 SDL2 旧接口迁移到 SDL3 的常见方式，关键点包括：</p>
+        <ul>
+          <li>使用 <code>find_package(SDL3 REQUIRED)</code> 来解析库和头文件</li>
+          <li>使用 <code>#include &lt;SDL3/SDL.h&gt;</code></li>
+          <li>使用 SDL3 的音频格式常量，例如 <code>SDL_AUDIO_S16</code></li>
+          <li>使用 SDL3 音频设备流接口：<code>SDL_OpenAudioDeviceStream()</code>、<code>SDL_PutAudioStreamData()</code>、<code>SDL_GetAudioStreamQueued()</code></li>
+          <li>不要继续使用 SDL2 旧式的 <code>AUDIO_S16SYS</code>、<code>SDL_QueueAudio()</code>、<code>SDL_GetQueuedAudioSize()</code> 这类 API</li>
+        </ul>
+        <p>这一点非常关键：项目的 ThirdParty 目录中实际上是 SDL3 3.2.18，因此当前代码应保持与 SDL3 一致，而不能再沿用 SDL2 的思路。</p>
+      </section>
+
+      <section id="s7">
+        <h2>7. Qt/QML 集成方式</h2>
+        <p>Main.qml 中使用了：</p>
+        <pre><code>import OctPlayer 1.0
+
+VideoOutput {
+    id: video
+    Component.onCompleted: video.setMailbox(player.videoMailbox())
+}</code></pre>
+        <p>也就是说，QML 直接调用 <code>player.videoMailbox()</code>，然后把返回的对象（这里被包装成 QObject 能力）传给自定义视频控件，最终由渲染线程消费最新帧供 OpenGL 绘制。</p>
+        <p>这里的设计重点是：<strong>不要把 FFmpeg/SDL/AVFrame 直接暴露给 QML</strong>。QML 只应该看到简单的信号、属性和可调用方法。</p>
+      </section>
+
+      <section id="s8">
+        <h2>8. 当前已完成项</h2>
+        <span class="status ready">已落地</span>
+        <ul>
+          <li>Qt 6 应用入口与 QML 容器</li>
+          <li>项目 CMake 构建结构</li>
+          <li>媒体类型和公共 player state 定义</li>
+          <li>FFmpeg 的 RAII 和 demuxer 封装</li>
+          <li>基础 Player / PlaybackSession 结构</li>
+          <li>SDL3 音频输出适配骨架</li>
+          <li>QQuickFramebufferObject 视频输出骨架</li>
+          <li>基础视频帧邮箱</li>
+        </ul>
+      </section>
+
+      <section id="s9">
+        <h2>9. 目前未完成/待补项</h2>
+        <span class="status scaffold">待补齐</span>
+        <ul>
+          <li>真正的 codec 解码线程与 packet/frame 队列</li>
+          <li>音视频同步策略（MediaClock / A/V sync）</li>
+          <li>seek 后的 generation 和 stale frame 过滤</li>
+          <li>OpenGL/YUV shader 转 RGB 处理</li>
+          <li>真实的播放状态机细节与错误恢复</li>
+          <li>音频/视频 drain、flush、EOS 处理</li>
+          <li>更完整的 QML/Qt 属性绑定与状态信号</li>
+          <li>测试用 fake sink / fake demuxer / fake decoder</li>
+        </ul>
+      </section>
+
+      <section id="s10">
+        <h2>10. 实施建议</h2>
+        <ol>
+          <li>先把“解封装与解码”补全，确保能拿到 AVPacket / AVFrame。</li>
+          <li>再补音频输出：音频帧进入 SDL3 stream；计算播放时长与队列长度。</li>
+          <li>然后补视频：将 decoded frame 交给最新帧 mailbox。</li>
+          <li>最后补同步：实现 master clock、seek generation 和 stale event 移除。</li>
+        </ol>
+        <div class="warning">
+          重点：不要在 UI 线程中直接进行 FFmpeg 解码和 OpenGL 纹理上传。这个项目的设计目标是把“播放器逻辑”和“UI 渲染”明确分离。
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <footer>
+    OctPlayer 架构说明 · 基于 FFmpeg / Qt6 / SDL3 / QQuickFramebufferObject
+  </footer>
+</body>
+</html>

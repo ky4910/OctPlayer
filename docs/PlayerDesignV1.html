@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FFmpeg + Qt + SDL 可复用播放器内核架构设计</title>
+<style>
+:root{--bg:#f5f7fb;--paper:#fff;--ink:#1c2430;--muted:#617084;--primary:#1769aa;--line:#d9e1eb;--code:#17212b;--accent:#eaf4ff;}
+*{box-sizing:border-box} html{scroll-behavior:smooth} body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",Arial,sans-serif;line-height:1.72}
+header{background:linear-gradient(135deg,#0c3b66,#1976b9);color:white;padding:54px 24px 46px} .hero{max-width:1100px;margin:auto} h1{font-size:34px;line-height:1.25;margin:0 0 14px} .subtitle{font-size:17px;opacity:.9;max-width:800px}
+.layout{max-width:1200px;margin:28px auto;display:grid;grid-template-columns:260px minmax(0,1fr);gap:24px;padding:0 18px} nav{position:sticky;top:18px;align-self:start;background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:14px;max-height:calc(100vh - 36px);overflow:auto} nav strong{display:block;padding:5px 9px 10px} nav a{display:block;color:#365067;text-decoration:none;padding:6px 9px;border-radius:7px;font-size:13px} nav a:hover{background:var(--accent);color:var(--primary)} main{min-width:0} section{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:28px 32px;margin-bottom:20px;box-shadow:0 5px 18px rgba(28,55,86,.05)} h2{font-size:24px;margin:0 0 18px;color:#123c60;border-bottom:1px solid var(--line);padding-bottom:10px} h3{font-size:18px;color:#214f76;margin-top:24px} p{margin:10px 0} ul,ol{padding-left:26px} code{font-family:"Cascadia Code",Consolas,monospace} :not(pre)>code{background:#edf2f7;padding:2px 5px;border-radius:4px;color:#b42318} pre{background:var(--code);color:#e6edf3;border-radius:10px;padding:18px;overflow:auto;line-height:1.5;font-size:13px} .callout,.warning{border-left:4px solid var(--primary);background:var(--accent);padding:13px 16px;border-radius:7px;margin:18px 0} .warning{border-color:#d97706;background:#fff7e6} footer{text-align:center;color:var(--muted);padding:15px 20px 40px;font-size:13px}
+@media(max-width:860px){.layout{grid-template-columns:1fr}nav{position:relative;top:0;max-height:none}section{padding:22px 20px}h1{font-size:28px}}
+@media print{body{background:white}header{background:white;color:black;padding:20px 0}nav{display:none}.layout{display:block;margin:0;max-width:none}section{box-shadow:none;border:none;break-inside:avoid;padding:12px 0}}
+</style>
+</head>
+<body>
+<header><div class="hero"><h1>FFmpeg + Qt + SDL 可复用播放器内核架构设计</h1><div class="subtitle">使用 FFmpeg 完成解封装与解码，SDL2 负责音频输出，QQuickFramebufferObject 负责 Qt Quick 视频渲染，并通过稳定接口构建可扩展、可测试、可替换的播放器内核。</div></div></header>
+<div class="layout"><nav><strong>目录</strong><a href="#s1">1. 总体架构</a><a href="#s2">2. 建议的模块划分</a><a href="#s3">3. 命令和事件模型</a><a href="#s4">4. 推荐线程模型</a><a href="#s5">5. FFmpeg 后端边界</a><a href="#s6">6. 队列设计</a><a href="#s7">7. SDL2 只负责音频输出</a><a href="#s8">8. 视频输出边界</a><a href="#s9">9. QQuickFramebufferObject 设计</a><a href="#s10">10. 视频像素格式策略</a><a href="#s11">11. 音视频同步</a><a href="#s12">12. Seek 流程</a><a href="#s13">13. Session 生命周期</a><a href="#s14">14. 推荐目录结构</a><a href="#s15">15. 可测试性设计</a><a href="#s16">16. 推荐实现顺序</a><a href="#s17">17. 关键避坑点</a><a href="#s18">18. 最终边界总结</a></nav><main><section id="s1"><h2>1. 总体架构</h2>
+<p>目标是构建一个基于 <strong>FFmpeg + Qt/QML + SDL2 + QQuickFramebufferObject</strong> 的播放器，同时形成稳定、可测试、可替换的播放器内核边界。</p>
+<pre><code>┌──────────────────── Qt / QML UI ──────────────────────┐
+│  PlayerViewModel / PlayerController                   │
+│  play() pause() seek() volume()                       │
+│  QQuickFramebufferObject                              │
+└──────────┬────────────────────────────────────────────┘
+           │ Stable Player API
+           ▼
+┌──────────────── Player SDK / Facade ──────────────────┐
+│  IPlayer / Player                                     │
+│  PlayerCommand / PlayerEvent / PlayerSnapshot         │
+└──────────────────────┬────────────────────────────────┘
+                       ▼
+┌──────────────────── Player Core ──────────────────────┐
+│  PlaybackSession / StateMachine / MediaClock          │
+│  DemuxController / SyncController / TrackManager      │
+│  PacketQueue / FrameQueue / BufferController          │
+└───────────────┬───────────────────┬───────────────────┘
+                ▼                   ▼
+┌────────────────────┐   ┌──────────────────────────────┐
+│ FFmpeg Backend     │   │ Output Adapters              │
+│ Demux / Decode     │   │ SDL2AudioSink                │
+│ Resample / Convert │   │ QtVideoFrameBridge           │
+└────────────────────┘   └──────────────────────────────┘</code></pre>
+<div class="callout"><strong>核心原则：</strong>UI 只认识播放器接口和事件，不认识 FFmpeg、SDL、解码线程或 AVFrame。</div>
+</section><section id="s2"><h2>2. 建议的模块划分</h2>
+<h3>2.1 player-api：稳定公共接口</h3>
+<p>该模块是播放器内核的公开边界，尽量不暴露 Qt、SDL 和 FFmpeg 类型。</p>
+<pre><code class="language-cpp">class IPlayer {
+public:
+    virtual ~IPlayer() = default;
+    virtual void open(MediaSource source) = 0;
+    virtual void play() = 0;
+    virtual void pause() = 0;
+    virtual void stop() = 0;
+    virtual void seek(std::chrono::milliseconds position) = 0;
+    virtual void setVolume(float volume) = 0;
+    virtual void setMuted(bool muted) = 0;
+    virtual void setRate(double rate) = 0;
+    virtual PlayerSnapshot snapshot() const = 0;
+    virtual void setEventCallback(PlayerEventCallback callback) = 0;
+};</code></pre>
+<p>公共头文件中不要出现 <code>AVFrame*</code>、<code>AVPacket*</code>、<code>SDL_AudioSpec</code>、<code>QObject*</code>、<code>QImage</code> 或 OpenGL 纹理类型。推荐只暴露自己的值类型。</p>
+<pre><code class="language-cpp">enum class PlayerState {
+    Idle, Opening, Ready, Playing, Paused,
+    Seeking, Buffering, Stopping, Ended, Error
+};</code></pre>
+<h3>2.2 player-core：播放流程和状态机</h3>
+<ul><li>播放状态机与命令串行化</li><li>Session 生命周期</li><li>Demux 调度和 Packet/Frame 队列</li><li>时钟、同步和缓冲策略</li><li>Seek、Flush、EOF 和错误传播</li><li>输出适配器协调</li></ul>
+<p>所有状态转换应统一由 <code>PlaybackSession</code> 或 <code>StateMachine</code> 执行，Worker 不应随意修改全局播放状态。</p>
+</section><section id="s3"><h2>3. 命令和事件模型</h2>
+<p>UI 的控制请求全部转换成命令，避免 GUI 线程直接跨线程调用解码器。</p>
+<pre><code class="language-cpp">using PlayerCommand = std::variant&lt;
+    OpenCommand, PlayCommand, PauseCommand,
+    SeekCommand, StopCommand, SetVolumeCommand,
+    SetRateCommand, SelectTrackCommand
+&gt;;</code></pre>
+<pre><code>Qt UI thread → ControlCommandQueue → Player control thread → PlaybackSession</code></pre>
+<p>事件反向传递，Qt 适配层收到内核事件后，再通过 <code>Qt::QueuedConnection</code> 转换为 Qt 信号和属性变化。Core 本身不依赖 Qt 信号槽。</p>
+</section><section id="s4"><h2>4. 推荐线程模型</h2>
+<pre><code>Qt GUI Thread
+  QML、按钮、属性、PlayerViewModel
+
+Qt Render Thread
+  QQuickFramebufferObject::Renderer
+  OpenGL 纹理上传及绘制
+
+Player Control Thread
+  命令、状态机、open/close/seek 协调
+
+Demux Thread
+  av_read_frame()，分发音视频 Packet
+
+Audio Decode Thread
+  解码、重采样、输出 PCM
+
+Video Decode Thread
+  解码、格式整理、提交 VideoFrame
+
+SDL Audio Callback Thread
+  从 PCM RingBuffer 取数据，更新音频时钟</code></pre>
+<p>第一阶段先保证职责和退出路径清晰，不必急于减少线程数量。</p>
+</section><section id="s5"><h2>5. FFmpeg 后端边界</h2>
+<p>对 FFmpeg 对象进行 RAII 封装，避免其生命周期泄漏到 Core 的其他部分。</p>
+<pre><code class="language-cpp">class FFmpegDemuxer {
+public:
+    OpenResult open(const MediaSource&amp; source);
+    ReadResult read(PacketRef&amp; packet);
+    SeekResult seek(std::chrono::milliseconds position);
+    void flush();
+    void close();
+};
+
+class FFmpegDecoder {
+public:
+    DecodeResult send(const PacketRef&amp; packet);
+    DecodeResult receive(FrameRef&amp; frame);
+    void flush();
+};</code></pre>
+<p>跨模块传递自己的 <code>VideoFrame</code>、<code>AudioFrame</code> 和 <code>PacketRef</code> 类型。第一版内部可以引用计数持有 AVFrame，但 UI 和渲染接口不要看到裸 <code>AVFrame*</code>。</p>
+</section><section id="s6"><h2>6. 队列设计</h2>
+<p>至少准备 Audio/Video/Subtitle PacketQueue 和 FrameQueue。队列不要只按包数量限制，还应支持字节数和媒体时长限制。</p>
+<pre><code class="language-cpp">struct QueueLimits {
+    size_t maxItems;
+    size_t maxBytes;
+    std::chrono::milliseconds maxDuration;
+};</code></pre>
+<ul><li><code>flush()</code>：丢弃旧数据</li><li><code>abort()</code>：立即唤醒阻塞线程并退出</li><li><code>close()</code>：停止接收新数据，但可消费剩余数据</li><li><code>reset()</code>：为下一阶段恢复队列</li></ul>
+<p>使用条件变量和取消令牌做背压，不要通过循环 <code>sleep(5ms)</code> 忙等。</p>
+</section><section id="s7"><h2>7. SDL2 只负责音频输出</h2>
+<pre><code class="language-cpp">class IAudioSink {
+public:
+    virtual ~IAudioSink() = default;
+    virtual AudioFormat open(const AudioFormat&amp; preferred) = 0;
+    virtual void start() = 0;
+    virtual void pause() = 0;
+    virtual void flush() = 0;
+    virtual void close() = 0;
+    virtual AudioClockSnapshot clock() const = 0;
+};</code></pre>
+<pre><code>AudioDecoder → AudioRingBuffer → SDL audio callback → Sound device</code></pre>
+<p>推荐 SDL callback + PCM RingBuffer，以便计算已播放样本数、设备延迟、欠载和精确音频时钟。第一版也可使用 <code>SDL_QueueAudio()</code>，但必须封装在 <code>SDL2AudioSink</code> 内。</p>
+</section><section id="s8"><h2>8. 视频输出边界</h2>
+<pre><code class="language-cpp">class IVideoSink {
+public:
+    virtual ~IVideoSink() = default;
+    virtual void submit(VideoFrame frame) = 0;
+    virtual void flush() = 0;
+    virtual void setFormat(const VideoFormat&amp; format) = 0;
+};</code></pre>
+<p>实现 <code>QtVideoFrameBridge</code> 作为 Core 与 Qt 渲染层之间的桥梁。推荐使用 latest-frame mailbox，而不是让渲染层消费无限增长的帧队列。</p>
+<pre><code>Video scheduler → Latest-frame mailbox → QQuickFramebufferObject Renderer</code></pre>
+</section><section id="s9"><h2>9. QQuickFramebufferObject 设计</h2>
+<p>拆成三个对象：</p>
+<ul><li><code>VideoOutputItem</code>：QML 属性和 update 触发，位于 GUI 线程</li><li><code>VideoOutputRenderer</code>：OpenGL 资源和绘制，位于 Qt 渲染线程</li><li><code>QtVideoFrameBridge</code>：播放器内核与渲染层之间的帧邮箱</li></ul>
+<p><code>synchronize()</code> 中仅做轻量状态和帧引用转移，不要在这里进行解码、<code>sws_scale()</code>、大块像素拷贝、Shader 编译或长时间锁等待。</p>
+<pre><code class="language-cpp">void VideoOutputRenderer::synchronize(
+    QQuickFramebufferObject* object)
+{
+    auto* item = static_cast&lt;VideoOutputItem*&gt;(object);
+    bridge_ = item-&gt;frameBridge();
+    fillMode_ = item-&gt;fillMode();
+    if (bridge_) {
+        pendingFrame_ = bridge_-&gt;acquireLatestFrame();
+    }
+}</code></pre>
+<div class="warning"><strong>注意：</strong>QQuickFramebufferObject 只适用于 Qt Quick 使用 OpenGL 渲染后端的场景。若未来要求 Vulkan、Metal 或 Qt RHI，应另做视频渲染适配器。</div>
+</section><section id="s10"><h2>10. 视频像素格式策略</h2>
+<p>第一版先规范化为 YUV420P：</p>
+<pre><code>Decoder output
+  ├─ YUV420P → 原样提交
+  └─ 其他格式 → sws_scale → YUV420P
+
+Y/U/V plane → GL_R8 textures → Fragment Shader → RGB</code></pre>
+<p>接口层预留 <code>YUV420P</code>、<code>NV12</code>、<code>RGBA</code>、<code>HardwareSurface</code>，并在 VideoFrame 中携带色彩空间、范围、原色、传递函数、SAR 和旋转信息。</p>
+</section><section id="s11"><h2>11. 音视频同步</h2>
+<p>建立独立 <code>MediaClock</code>，视频解码器不直接操作 SDL，也不通过长时间 sleep 自行同步。</p>
+<ul><li>存在音频时：AudioClock 作为主时钟</li><li>无音频时：Monotonic/System Clock 作为主时钟</li><li>外部同步时：External Clock 作为主时钟</li></ul>
+<pre><code>delta = videoPts - masterClock.now()
+
+视频明显超前 → 可中断等待
+接近目标时间 → 提交 VideoSink
+视频明显落后 → 按策略丢帧</code></pre>
+</section><section id="s12"><h2>12. Seek 流程</h2>
+<ol><li>状态切换为 Seeking</li><li>暂停向输出提交新数据</li><li>唤醒所有阻塞队列</li><li>清空 PacketQueue 和 FrameQueue</li><li>Flush 音频和视频输出</li><li>调用 <code>avcodec_flush_buffers()</code></li><li>调用 <code>avformat_seek_file()</code></li><li>重置主时钟</li><li>恢复队列并从新位置解码</li><li>回到 Playing 或 Paused</li></ol>
+<p>为 Seek 命令、Packet 和 Frame 增加 generation。旧 generation 的异步帧到达时直接丢弃，避免旧数据污染新时间点。</p>
+</section><section id="s13"><h2>13. Session 生命周期</h2>
+<pre><code>Player
+  └─ PlaybackSession #42
+      ├─ Demuxer
+      ├─ Decoders
+      ├─ Queues
+      ├─ Clock
+      └─ CancellationSource</code></pre>
+<p>每次 open 创建独立 Session。切换媒体时先取消旧 Session、等待线程退出、释放资源，再创建新 Session。所有异步事件携带 <code>sessionId</code>，Qt 层忽略旧 Session 的迟到事件。</p>
+</section><section id="s14"><h2>14. 推荐目录结构</h2>
+<pre><code>player/
+├── api/
+│   ├── iplayer.h
+│   ├── player_command.h
+│   ├── player_event.h
+│   └── media_types.h
+├── core/
+│   ├── playback_session.cpp
+│   ├── player_state_machine.cpp
+│   ├── packet_queue.cpp
+│   ├── frame_queue.cpp
+│   ├── media_clock.cpp
+│   └── sync_controller.cpp
+├── backend/ffmpeg/
+│   ├── ffmpeg_demuxer.cpp
+│   ├── ffmpeg_decoder.cpp
+│   ├── ffmpeg_audio_converter.cpp
+│   └── ffmpeg_video_converter.cpp
+├── output/
+│   ├── audio/sdl2_audio_sink.cpp
+│   └── video/video_frame_mailbox.cpp
+├── platform/qt/
+│   ├── qt_player_adapter.cpp
+│   ├── player_view_model.cpp
+│   ├── video_output_item.cpp
+│   ├── video_output_renderer.cpp
+│   └── shaders/
+├── app/
+└── tests/</code></pre>
+</section><section id="s15"><h2>15. 可测试性设计</h2>
+<p>提供 <code>FakeAudioSink</code>、<code>FakeVideoSink</code>、<code>FakeClock</code>、<code>FakeDemuxer</code> 和 <code>FakeDecoder</code>，让核心逻辑不依赖真实窗口和声卡即可测试。</p>
+<ul><li>打开失败是否回到稳定状态</li><li>Stop 是否唤醒所有阻塞线程</li><li>连续 Seek 是否只保留最终结果</li><li>纯音频、纯视频是否可正常处理</li><li>EOF 后是否正确 Drain 解码器</li><li>切换文件后是否屏蔽旧 Session 事件</li><li>Renderer 销毁后是否仍提交帧</li></ul>
+</section><section id="s16"><h2>16. 推荐实现顺序</h2>
+<h3>第一阶段：建立边界</h3><p>IPlayer、PlayerEvent、PlaybackSession、FFmpegDemuxer、FFmpegDecoder、SDL2AudioSink、QtVideoFrameBridge 和 QQuickFramebufferObject Renderer。</p>
+<h3>第二阶段：正确性</h3><p>Session/generation、错误恢复、Drain/EOF、队列背压、可中断等待、连续 Seek、资源释放和单元测试。</p>
+<h3>第三阶段：扩展能力</h3><p>字幕、多轨切换、倍速、截图、网络缓冲、断线重连、硬件解码、多像素格式以及录像或转码 Tap。</p>
+</section><section id="s17"><h2>17. 关键避坑点</h2>
+<ol><li>不要通过 Qt 信号裸传 <code>AVFrame*</code>，必须明确所有权和释放时机。</li><li>不要让 PlayerController 直接创建并调度全部 Worker。</li><li>不要让解码线程直接调用 QML 对象。</li><li>不要让渲染线程访问解码器的可变状态。</li><li>不要用固定延时等待模块初始化完成，应使用 Ready 事件。</li><li>不要用不可中断 sleep 做同步。</li><li>SDL 只负责音频，视频统一交给 Qt Quick 渲染链。</li><li>为未来非 OpenGL 后端预留新的渲染适配器。</li></ol>
+</section><section id="s18"><h2>18. 最终边界总结</h2>
+<pre><code>QML
+ │
+QtPlayerAdapter
+ │
+IPlayer + Command/Event
+ │
+PlaybackSession
+ ├─ FFmpeg Backend
+ ├─ SDL2AudioSink
+ └─ QtVideoFrameBridge
+          │
+   QQuickFramebufferObject Renderer</code></pre>
+<div class="callout"><strong>最终目标：</strong>形成的不是一个与 Qt 页面紧耦合的播放器，而是一个可被不同 UI、不同音频后端、不同解码后端和不同视频渲染器复用的播放器内核。</div>
+</section></main></div>
+<footer>架构设计说明文档 · FFmpeg / Qt Quick / SDL2 / OpenGL</footer>
+</body></html>

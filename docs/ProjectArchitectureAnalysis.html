@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OctPlayer 架构分析与实施建议</title>
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --paper: #ffffff;
+      --ink: #17273b;
+      --muted: #5e7188;
+      --line: #dfe8f1;
+      --primary: #1769aa;
+      --primary-2: #0f4d78;
+      --accent: #eaf5ff;
+      --good: #1d7f5b;
+      --warn: #b66b28;
+      --danger: #a63b40;
+      --shadow: 0 12px 28px rgba(18, 42, 65, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+      line-height: 1.75;
+    }
+
+    .topbar {
+      background: linear-gradient(135deg, #0d3458, #1976b9);
+      color: white;
+      padding: 52px 24px 42px;
+    }
+
+    .container {
+      max-width: 1180px;
+      margin: 0 auto;
+    }
+
+    .title {
+      margin: 0;
+      font-size: clamp(2rem, 3vw, 3rem);
+      line-height: 1.2;
+      letter-spacing: 0.02em;
+    }
+
+    .subtitle {
+      margin-top: 14px;
+      max-width: 900px;
+      font-size: 1.05rem;
+      opacity: 0.96;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1fr);
+      gap: 22px;
+      margin: 24px auto 40px;
+      max-width: 1180px;
+      padding: 0 18px;
+    }
+
+    nav {
+      position: sticky;
+      top: 18px;
+      align-self: start;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      padding: 16px 14px;
+    }
+
+    nav .nav-title {
+      display: block;
+      font-weight: 800;
+      color: var(--primary-2);
+      padding: 6px 8px 12px;
+    }
+
+    nav a {
+      display: block;
+      text-decoration: none;
+      color: #3a536e;
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 0.92rem;
+      margin: 3px 0;
+    }
+
+    nav a:hover {
+      background: var(--accent);
+      color: var(--primary);
+    }
+
+    main {
+      min-width: 0;
+    }
+
+    section {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+      margin-bottom: 22px;
+      overflow: hidden;
+    }
+
+    .section-head {
+      padding: 22px 28px 18px;
+      background: linear-gradient(180deg, #ffffff, #f8fbff);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .section-tag {
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      color: var(--primary);
+    }
+
+    h2 {
+      margin: 8px 0 4px;
+      font-size: clamp(1.5rem, 2vw, 2.2rem);
+      color: var(--primary-2);
+    }
+
+    .section-head p {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .content {
+      padding: 20px 28px 26px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+      margin-top: 8px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fafcff;
+      padding: 16px 16px 14px;
+    }
+
+    .card h3 {
+      margin: 0 0 8px;
+      font-size: 1.02rem;
+      color: var(--primary-2);
+    }
+
+    .card p, .content p, .content li {
+      color: #2e3e52;
+    }
+
+    ul {
+      margin: 8px 0 0 18px;
+      padding: 0;
+    }
+
+    li { margin-bottom: 8px; }
+
+    .status-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 7px 12px;
+      font-size: 0.8rem;
+      font-weight: 700;
+      border: 1px solid transparent;
+    }
+
+    .done { background: #e9f7f1; color: var(--good); border-color: #cfece0; }
+    .todo { background: #fff7eb; color: var(--warn); border-color: #f4ddb1; }
+    .risk { background: #fdecef; color: var(--danger); border-color: #f4c7d0; }
+
+    .phase-box {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: linear-gradient(180deg, #ffffff, #f8fbff);
+      padding: 16px 18px;
+      margin-bottom: 14px;
+    }
+
+    .phase-box h3 {
+      margin: 0 0 8px;
+      font-size: 1.08rem;
+      color: var(--primary-2);
+    }
+
+    .highlight {
+      background: #edf7ff;
+      border-left: 4px solid var(--primary);
+      padding: 12px 14px;
+      border-radius: 9px;
+      color: #1c3553;
+      margin: 16px 0;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 8px;
+    }
+
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      padding: 12px 10px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    th {
+      background: #f5f9ff;
+      color: var(--primary-2);
+      font-size: 0.92rem;
+    }
+
+    .foot {
+      padding: 18px 24px 28px;
+      color: var(--muted);
+      text-align: center;
+      font-size: 0.9rem;
+    }
+
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+      nav { position: static; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="container">
+      <h1 class="title">OctPlayer 架构分析与实施建议</h1>
+      <div class="subtitle">
+        基于现有代码结构、FFmpeg + Qt Quick + SDL 的分层设计，以及 TodoSteps.html 的执行路线，整理出项目当前状态、关键架构边界和后续优先级。
+      </div>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav>
+      <span class="nav-title">目录</span>
+      <a href="#overview">1. 项目定位</a>
+      <a href="#layers">2. 分层架构</a>
+      <a href="#core-flow">3. 控制流与状态机</a>
+      <a href="#status">4. 现状判断</a>
+      <a href="#roadmap">5. 下一步路线</a>
+      <a href="#recommendation">6. 最优建议</a>
+    </nav>
+
+    <main>
+      <section id="overview">
+        <div class="section-head">
+          <div class="section-tag">OVERVIEW</div>
+          <h2>1. 项目定位：这是“播放器内核骨架”，而非成品播放器</h2>
+          <p>从 README 和代码结构看，OctPlayer 是一个带有明确分层边界的播放器骨架，目标是把控制层、解封装、解码、音频输出、视频输出和 Qt 适配层拆开。</p>
+        </div>
+        <div class="content">
+          <div class="highlight">
+            结论很明确：当前并不是“能直接播放所有媒体”的成熟播放器，而是已经具备播放器核心抽象与跑通框架能力的工程骨架，重点在“边界清晰、可扩展、可测试”。
+          </div>
+          <div class="status-row">
+            <span class="badge done">已建骨架</span>
+            <span class="badge done">已定义状态机</span>
+            <span class="badge done">已抽离 API 层</span>
+            <span class="badge todo">待完成 FFmpeg 解码链路</span>
+            <span class="badge todo">待完成视频渲染真正输出</span>
+          </div>
+          <p>从 README 的状态描述可以确认，当前项目已经具备这些要点：</p>
+          <ul>
+            <li>状态转换、生命周期、命令串行化、时钟与同步边界已经建立。</li>
+            <li>FFmpeg demux / decode / stream 发现、大量解码器细节、Seek 与 flush 语义、视频纹理上传等都被设计成“明确扩展点”。</li>
+            <li>音频、视频和 Qt 适配层是独立的接口，后续可以逐步填充而不动整个架构。</li>
+          </ul>
+        </div>
+      </section>
+
+      <section id="layers">
+        <div class="section-head">
+          <div class="section-tag">ARCHITECTURE</div>
+          <h2>2. 分层架构：清晰的责任边界</h2>
+          <p>项目最重要的价值在于“分层非常合理”，这让它足以承接后续复杂功能扩展。</p>
+        </div>
+        <div class="content">
+          <div class="grid">
+            <div class="card">
+              <h3>API 层</h3>
+              <p>player/api 中承载稳定接口：IPlayer、MediaTypes、PlayerEvent。这里定义媒体源、状态、时间、事件结构，目的是让上层 UI 和底层实现解耦。</p>
+            </div>
+            <div class="card">
+              <h3>核心控制层</h3>
+              <p>player/core 中的 Player、PlaybackSession、MediaClock、AudioClock 是播放器的总控中心。Player 负责串行接收命令；PlaybackSession 负责单次打开/播放/暂停/seek 的会话生命周期。</p>
+            </div>
+            <div class="card">
+              <h3>FFmpeg 后端</h3>
+              <p>backend/ffmpeg 下的 FfmpegDemuxer、PacketQueue、AudioDecoder 等类负责底层封装、pkt 读出和音频解码，仍然暴露出明显的扩展接口。</p>
+            </div>
+            <div class="card">
+              <h3>输出适配层</h3>
+              <p>output/audio 与 output/video 分别绑定 SDL 音频输出和视频帧邮箱（mailbox）。这是实现 A/V 分离和后续渲染时序控制的关键。</p>
+            </div>
+            <div class="card">
+              <h3>Qt 平台层</h3>
+              <p>platform/qt 下的 QtPlayerAdapter、VideoOutputItem、VideoOutputRenderer 负责把播放状态桥接到 QML 和 Quick 场景图。</p>
+            </div>
+            <div class="card">
+              <h3>应用层</h3>
+              <p>app 下的 Main.qml 是最小可交互的演示层，用于打开媒体、播放、暂停、快进、显示时间和绑定视频输出项。</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="core-flow">
+        <div class="section-head">
+          <div class="section-tag">CONTROL FLOW</div>
+          <h2>3. 控制流与状态机：最核心的工程价值</h2>
+          <p>项目真正重要的部分，不是某个播放器 demo，而是“播放器生命周期和状态管理机制”。</p>
+        </div>
+        <div class="content">
+          <p>从 Player.cpp 可以看到，Player 内部使用命令队列 + 控制线程来串行处理 open/play/resume/pause/stop/seek 等操作，避免 UI 直接跨线程访问播放状态和解码器。这意味着：</p>
+          <ul>
+            <li>UI 线程职责单一，负责 QML/Qt 事件；内核通过 controlThread_ 执行状态变化。</li>
+            <li>每次 open 都会创建新的 PlaybackSession，并立刻将旧 session 置为 stop/失效，确保 session generation 机制有效。</li>
+            <li>通过 activeSessionId_ 和 activeGeneration_ 过滤旧事件，避免切换媒体时“上一会话的状态事件污染新界面”。</li>
+            <li>PlayerEvent 体系是桥接内部状态与 UI 的关键，事件携带 sessionId、generation 和 payload，显著降低脏状态/竞态风险。</li>
+          </ul>
+
+          <div class="highlight">
+            这是一个非常合理的播放器设计：控制流在 Player，真实播放行为在 PlaybackSession，输出适配在 SDL/VideoFrameMailbox，UI 在 QML。它已经非常接近成熟播放器的最小骨架模型。
+          </div>
+
+          <p>PlaybackSession 也明确体现了“会话”设计思想：</p>
+          <ul>
+            <li>open() -> demuxer_.open()，提取元信息并设置 duration / seekable / tracks。</li>
+            <li>play() -> 启动 demux 线程和音频线程。</li>
+            <li>seek() -> 先 stopDemuxThread / stopAudioThread，再 flush audio/video 缓冲区，然后重新 seek。</li>
+            <li>stop() -> 清理 audio、video、decoder、clock，并进入 Idle 状态。</li>
+          </ul>
+        </div>
+      </section>
+
+      <section id="status">
+        <div class="section-head">
+          <div class="section-tag">CURRENT STATUS</div>
+          <h2>4. 现状判断：已经完成“架构嫁接”，还没完成“播放能力闭环”</h2>
+        </div>
+        <div class="content">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>模块</th>
+                  <th>现状</th>
+                  <th>判断</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>状态机 / 生命周期</td>
+                  <td>已具备骨架和状态转换</td>
+                  <td>较成熟，适合继续扩展</td>
+                </tr>
+                <tr>
+                  <td>Player 命令队列</td>
+                  <td>已串行化处理</td>
+                  <td>正确且适合后续线程拆分</td>
+                </tr>
+                <tr>
+                  <td>FFmpeg demux</td>
+                  <td>抽象存在，但读流与 seek 细节还没闭环</td>
+                  <td>下一阶段必做</td>
+                </tr>
+                <tr>
+                  <td>音频输出</td>
+                  <td>SDL sink 与 resampler 已建立</td>
+                  <td>是最适合优先打通的路径</td>
+                </tr>
+                <tr>
+                  <td>视频输出</td>
+                  <td>FrameMailbox 和 QtRenderer 已建立，但真正上传纹理/Shader 未完成</td>
+                  <td>待补足真实渲染管线</td>
+                </tr>
+                <tr>
+                  <td>Seek / flush / EOF / stale session</td>
+                  <td>设计意图已体现</td>
+                  <td>仍需真实测试验证</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p>从代码语义看，最关键的现实判断是：</p>
+          <ul>
+            <li>主架构方向是对的；</li>
+            <li>当前实现已经建立了“播放器运行时的骨骼”；</li>
+            <li>真正缺失的是“数据路径的完整闭环”：FFmpeg 读取、解码、音频回调、视频帧消费、seek/flush 与渲染上传。</li>
+          </ul>
+        </div>
+      </section>
+
+      <section id="roadmap">
+        <div class="section-head">
+          <div class="section-tag">ROADMAP</div>
+          <h2>5. 下一步路线：按 TodoSteps.html 的顺序最合理</h2>
+          <p>参考 TodoSteps.html 的建议，最优顺序不是“先做视频渲染”，而是“先把可播放骨架闭环，再补视频输出”。</p>
+        </div>
+        <div class="content">
+          <div class="phase-box">
+            <h3>第一阶段：先把播放器骨架跑起来</h3>
+            <ul>
+              <li>完善状态机，保证 Idle / Opening / Ready / Playing / Paused / Stopping / Error 的合法转换。</li>
+              <li>继续串行化命令队列，保证 UI 与控制线程之间没有直接跨线程状态访问。</li>
+              <li>为会话加上 sessionId + generation，保证切换媒体时忽略旧事件、旧帧和旧错误。</li>
+            </ul>
+          </div>
+
+          <div class="phase-box">
+            <h3>第二阶段：完成 FFmpeg 基础能力</h3>
+            <ul>
+              <li>实现 FfmpegDemuxer::read/seek 和 stream discovery。</li>
+              <li>明确 MediaInfo：时长、音视频流索引、宽高、采样率、声道、seekable。</li>
+              <li>建立 PacketQueue，并按音频/视频 stream 分发，支持 flush、abort、close 和 reset。</li>
+            </ul>
+          </div>
+
+          <div class="phase-box">
+            <h3>第三阶段：优先打通音频</h3>
+            <ul>
+              <li>AudioDecoder 作为第一大优先级，实现 PCM 产出。</li>
+              <li>将 decoded PCM 送入 SDL ring buffer / audio sink。</li>
+              <li>用 AudioClock 建立时钟，确保音频播放状态和 seek/restart 正确。</li>
+            </ul>
+          </div>
+
+          <div class="phase-box">
+            <h3>第四阶段：视频解码与调度</h3>
+            <ul>
+              <li>实现视频解码线程和帧队列。</li>
+              <li>把解码出来的视频帧交给 VideoFrameMailbox。</li>
+              <li>在显示前做 pts、时钟同步和帧龄检测。</li>
+            </ul>
+          </div>
+
+          <div class="phase-box">
+            <h3>第五阶段：Qt Quick 视频显示</h3>
+            <ul>
+              <li>用 QQuickFramebufferObject 或 OpenGL 纹理上传替换当前的测试图样。</li>
+              <li>支持 YUV420P / NV12 等经典格式的 shader 转换。</li>
+              <li>把实际帧直接送入 UI 线程的可显示对象。</li>
+            </ul>
+          </div>
+
+          <div class="phase-box">
+            <h3>第六阶段：make local file playback usable</h3>
+            <ul>
+              <li>完善 seek、EOF、重复 seek、stop 和 stale session 处理。</li>
+              <li>加入生成检查，确保数据帧在 seek 后可被丢弃和重建。</li>
+              <li>确认本地媒体可以稳定打开和播放。</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section id="recommendation">
+        <div class="section-head">
+          <div class="section-tag">RECOMMENDATION</div>
+          <h2>6. 最优建议：按“音频优先、视频随后、稳定性最后”的顺序推进</h2>
+        </div>
+        <div class="content">
+          <p>如果要在当前工程上做下一步，最实用的顺序是：</p>
+          <ol>
+            <li><strong>先做 FFmpeg demux + seek + PacketQueue</strong>：这是底层数据入口，没它后面的播放无从谈起。</li>
+            <li><strong>再做音频 decoder + SDL sink + AudioClock</strong>：音频是通常最容易验证“播放器真的播放了声音”的地方，而且对时钟和状态恢复非常关键。</li>
+            <li><strong>再做视频解码和 VideoFrameMailbox</strong>：在有稳定音频和时钟基础后，视频渲染会简单很多。</li>
+            <li><strong>最后补充 Qt 纹理上传与 shader</strong>：在架构稳定后再做显示细节，避免重复推翻结构。</li>
+          </ol>
+
+          <div class="highlight">
+            这个顺序和 TodoSteps.html 的路线几乎一致：它强调“不急着看到画面”，而是优先保证 Session 生命周期、时钟、命令串行和输出边界正确。这个方向对工程质量最稳妥。
+          </div>
+
+          <p>从工程视角看，OctPlayer 当前最值得做的不是“堆更多功能”，而是把下面这些能力真正打通：</p>
+          <ul>
+            <li>FFmpeg demux 正确读包；</li>
+            <li>PacketQueue 可靠工作；</li>
+            <li>AudioDecoder 产出 PCM；</li>
+            <li>SDL sink 真正播放；</li>
+            <li>VideoFrameMailbox 能接收真实视频帧；</li>
+            <li>QtRenderer 能消费并显示；</li>
+            <li>seek/flush/EOF/stale session 能稳定处理。</li>
+          </ul>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="container foot">
+    结论：OctPlayer 当前处于“架构骨架已成立，能力闭环待补齐”的阶段；按照 TodoSteps.html 的规划，最优推进路径是“FFmpeg -> 音频 -> 视频 -> 稳定性与扩展能力”。
+  </div>
+</body>
+</html>

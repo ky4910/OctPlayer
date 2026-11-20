@@ -1,0 +1,18 @@
+# Build directories
+build/
+out/
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+
+# IDE
+.vscode/
+.idea/
+.VSCodeCounter/
+.qtcreator/
+
+# Temporary files
+*.tmp
+*.log
